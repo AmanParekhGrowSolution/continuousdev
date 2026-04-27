@@ -1,50 +1,393 @@
-name: Claude Code
+# .github/workflows/claude.yml
+#
+# End-to-end Android pipeline:
+#   1. Open a GitHub Issue describing a feature ("Add a calendar screen with
+#      month view"). Claude reads it, implements on a new branch, opens a PR.
+#   2. CI builds debug APK, runs lint, runs unit tests.
+#   3. A separate Claude job reviews the PR with Android-specific focus.
+#   4. If CI fails, Claude is invoked to fix it.
+#   5. When CI is green, Slack gets a message linking to the PR's APK artifact
+#      so you can sideload it onto your phone and review.
+#
+# Required repository secrets:
+#   CLAUDE_CODE_OAUTH_TOKEN  - generate locally with `claude setup-token`
+#   SLACK_WEBHOOK_URL        - Slack incoming webhook URL
+
+name: Claude Android Pipeline
 
 on:
+  issues:
+    types: [opened, labeled]
   issue_comment:
     types: [created]
+  pull_request:
+    types: [opened, synchronize, reopened]
   pull_request_review_comment:
     types: [created]
-  issues:
-    types: [opened, assigned]
-  pull_request_review:
-    types: [submitted]
+
+concurrency:
+  group: claude-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+  actions: read   # needed so Claude can read CI logs in the autofix job
 
 jobs:
-  claude:
+  # ---------------------------------------------------------------------------
+  # Job 1: Implement the feature described in the issue
+  # ---------------------------------------------------------------------------
+  implement:
+    name: Implement feature from issue
     if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
-      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+      (github.event_name == 'issues' &&
+        (github.event.action == 'opened' ||
+         (github.event.action == 'labeled' && github.event.label.name == 'claude-implement'))) ||
+      (github.event_name == 'issue_comment' &&
+        !github.event.issue.pull_request &&
+        contains(github.event.comment.body, '@claude'))
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-      issues: read
-      id-token: write
-      actions: read # Required for Claude to read CI results on PRs
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
-      - name: Run Claude Code
-        id: claude
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cache Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Run Claude (implementation)
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            You are implementing an Android feature requested in this GitHub issue.
 
-          # This is an optional setting that allows Claude to read CI results on PRs
-          additional_permissions: |
-            actions: read
+            Issue title: ${{ github.event.issue.title }}
+            Issue body:
+            ${{ github.event.issue.body }}
 
-          # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
-          # prompt: 'Update the pull request description to include a summary of changes.'
+            STRICT PROCESS:
+            1. Read CLAUDE.md at the repo root and follow ALL conventions there.
+               It defines the stack, architecture, and rules. Do not deviate.
+            2. If the repo is empty, scaffold a fresh Android project per the
+               stack defined in CLAUDE.md (Kotlin + Jetpack Compose + Material 3).
+            3. Create a branch named `claude/issue-${{ github.event.issue.number }}`.
+            4. Implement the feature with idiomatic Kotlin + Compose:
+                  - Stateless composables; hoist state to ViewModels
+                  - Use `remember` and `rememberSaveable` correctly
+                  - Coroutines scoped to viewModelScope, never GlobalScope
+                  - All user-facing strings in res/values/strings.xml
+                  - Material 3 components, MaterialTheme.colorScheme tokens
+                  - Handle config changes and process death
+                  - No Activity context leaks; use applicationContext where appropriate
+            5. Add tests appropriate for what you built:
+                  - Pure logic and ViewModels: JUnit + kotlinx-coroutines-test
+                  - Composables: androidx.compose.ui.test (only for non-trivial UI)
+                  - Skip UI tests for purely cosmetic changes
+            6. Run `./gradlew lintDebug testDebugUnitTest assembleDebug` locally
+               and make sure it ALL passes before committing.
+            7. Commit with a clear conventional-commit-style message.
+            8. Open a Pull Request whose body includes:
+                  - "Closes #${{ github.event.issue.number }}"
+                  - A short list of screens/components added
+                  - Any assumptions you made
+                  - Anything you intentionally skipped
+            9. Do NOT merge the PR. Leave it for human review.
+          claude_args: |
+            --max-turns 60
+            --model claude-opus-4-7
+            --allowedTools "Bash(./gradlew *),Bash(git *),Bash(ls *),Bash(cat *),Bash(mkdir *),Bash(find *),View,GlobTool,GrepTool,Edit,Write"
 
-          # Optional: Add claude_args to customize behavior and configuration
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
-          # claude_args: '--allowed-tools Bash(gh pr *)'
+  # ---------------------------------------------------------------------------
+  # Job 2: Build, lint, and test on every PR push
+  # ---------------------------------------------------------------------------
+  ci:
+    name: Build / Lint / Test
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      result: ${{ steps.assemble.outcome }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
 
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cache Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Grant gradlew exec permission
+        run: chmod +x ./gradlew || true
+
+      - name: Lint
+        id: lint
+        continue-on-error: true
+        run: ./gradlew lintDebug --stacktrace
+
+      - name: Unit tests
+        id: tests
+        continue-on-error: true
+        run: ./gradlew testDebugUnitTest --stacktrace
+
+      - name: Assemble debug APK
+        id: assemble
+        continue-on-error: true
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Upload APK artifact
+        if: steps.assemble.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-pr-${{ github.event.pull_request.number }}
+          path: '**/build/outputs/apk/debug/*.apk'
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload lint + test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-pr-${{ github.event.pull_request.number }}
+          path: |
+            **/build/reports/lint-results-debug.html
+            **/build/reports/tests/testDebugUnitTest/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Fail if any step failed
+        if: steps.lint.outcome == 'failure' || steps.tests.outcome == 'failure' || steps.assemble.outcome == 'failure'
+        run: |
+          echo "CI failed: lint=${{ steps.lint.outcome }} tests=${{ steps.tests.outcome }} assemble=${{ steps.assemble.outcome }}"
+          exit 1
+
+  # ---------------------------------------------------------------------------
+  # Job 3: Claude reviews the PR (Android-specific focus)
+  # ---------------------------------------------------------------------------
+  review:
+    name: Claude code review
+    if: github.event_name == 'pull_request' && github.event.action == 'opened'
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Run Claude (Android reviewer)
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            You are a senior Android engineer reviewing PR #${{ github.event.pull_request.number }}.
+            You did NOT write this code; review it as if a junior engineer did.
+            Reference CLAUDE.md for project conventions.
+
+            Focus on Android-specific issues, in priority order:
+
+            CORRECTNESS & LIFECYCLE
+              - Activity / Context leaks (storing Activity references, leaking
+                via static fields, leaking from singletons, leaking via callbacks)
+              - Coroutine scope correctness (viewModelScope, lifecycleScope;
+                never GlobalScope; cancellation handling)
+              - Config change and process death handling (rememberSaveable,
+                SavedStateHandle, ViewModel reuse)
+              - Memory leaks from listeners, observers, broadcast receivers
+                that aren't unregistered
+
+            COMPOSE-SPECIFIC
+              - Recomposition correctness — unstable parameters, lambdas
+                captured incorrectly, state hoisted to the wrong level
+              - `remember` vs `rememberSaveable` used appropriately
+              - Side effects in the right effect handler (LaunchedEffect,
+                DisposableEffect, SideEffect)
+              - No business logic inside composables
+
+            CONCURRENCY
+              - Main-thread blocking (network, disk, DB on Dispatchers.Main)
+              - Race conditions in shared state
+              - Flow collection on the right scope and dispatcher
+
+            UI / UX
+              - Material 3 theming used; no hardcoded colors or dp/sp values
+              - Hardcoded strings — everything user-facing must be in strings.xml
+              - Accessibility: contentDescription on icons/images,
+                semantic Modifier.semantics where appropriate, touch targets >= 48dp,
+                supports TalkBack
+              - Dark theme support
+              - Edge-to-edge handled (insets, system bars)
+
+            SECURITY
+              - Secrets, API keys, tokens not committed
+              - Network traffic uses HTTPS, certificate pinning if needed
+              - Sensitive data not in logs or SharedPreferences in plaintext
+              - Exported components (activities, services, receivers) reviewed
+              - Permissions in AndroidManifest minimal and justified
+
+            TESTING
+              - Tests exist for non-trivial logic
+              - Tests are deterministic (no real time, no real network)
+              - ViewModels tested with TestDispatcher
+
+            Post inline comments on specific lines. Then post ONE summary
+            comment at the top with:
+              - Verdict: APPROVE / REQUEST_CHANGES / COMMENT
+              - Numbered list of BLOCKING issues
+              - Numbered list of NON-BLOCKING suggestions
+
+            Do NOT push code changes from this job.
+          claude_args: |
+            --max-turns 25
+            --model claude-opus-4-7
+
+  # ---------------------------------------------------------------------------
+  # Job 4: If CI fails, ask Claude to fix the PR
+  # ---------------------------------------------------------------------------
+  autofix:
+    name: Auto-fix failing PR
+    if: github.event_name == 'pull_request' && always()
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip if CI passed
+        if: needs.ci.result != 'failure'
+        run: |
+          echo "CI passed, nothing to fix."
+          exit 0
+
+      - uses: actions/checkout@v4
+        if: needs.ci.result == 'failure'
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        if: needs.ci.result == 'failure'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        if: needs.ci.result == 'failure'
+        uses: android-actions/setup-android@v3
+
+      - name: Cache Gradle
+        if: needs.ci.result == 'failure'
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Run Claude (fixer)
+        if: needs.ci.result == 'failure'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            CI is failing on PR #${{ github.event.pull_request.number }}.
+
+            Read the most recent failed Actions run logs for this PR. Identify
+            whether lint, unit tests, or `assembleDebug` failed and fix it.
+
+            RULES:
+              - Smallest possible change to make CI green.
+              - Do NOT disable, ignore, or weaken tests/lint. If a test or
+                lint rule is genuinely wrong, fix it correctly and explain why
+                in the commit message.
+              - Do not bump dependencies unless that is the actual fix.
+              - Run `./gradlew lintDebug testDebugUnitTest assembleDebug`
+                locally before committing — verify it passes.
+              - Push the fix to the PR's existing branch.
+              - Add a PR comment summarizing the root cause and the fix.
+          claude_args: |
+            --max-turns 30
+            --model claude-opus-4-7
+            --allowedTools "Bash(./gradlew *),Bash(git *),Bash(ls *),Bash(cat *),Bash(find *),View,GlobTool,GrepTool,Edit,Write"
+
+  # ---------------------------------------------------------------------------
+  # Job 5: Notify Slack with a direct APK download link
+  # ---------------------------------------------------------------------------
+  notify-slack:
+    name: Notify Slack with APK
+    if: github.event_name == 'pull_request'
+    needs: [ci, review]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build artifact URL
+        if: needs.ci.result == 'success'
+        id: artifact
+        run: |
+          ARTIFACT_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts"
+          echo "url=$ARTIFACT_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Post to Slack (success)
+        if: needs.ci.result == 'success'
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: "Android build ready: ${{ github.event.pull_request.title }}"
+            blocks:
+              - type: "header"
+                text:
+                  type: "plain_text"
+                  text: "📱 APK ready to test"
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "*<${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }}>*\nRepo: `${{ github.repository }}`\nBranch: `${{ github.event.pull_request.head.ref }}`\nBuild: ✅ passed"
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "Download the *debug APK* from the GitHub Actions run, then sideload it on your phone (enable _Install unknown apps_ for your browser/file manager)."
+              - type: "actions"
+                elements:
+                  - type: "button"
+                    text:
+                      type: "plain_text"
+                      text: "Download APK"
+                    url: "${{ steps.artifact.outputs.url }}"
+                    style: "primary"
+                  - type: "button"
+                    text:
+                      type: "plain_text"
+                      text: "Open PR"
+                    url: "${{ github.event.pull_request.html_url }}"
+
+      - name: Post to Slack (failure)
+        if: needs.ci.result == 'failure'
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: "Android build failed: ${{ github.event.pull_request.title }}"
+            blocks:
+              - type: "header"
+                text:
+                  type: "plain_text"
+                  text: "❌ Build failed — Claude is fixing it"
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "*<${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }}>*\nThe autofix job is running. You'll get another Slack ping when the build is green."

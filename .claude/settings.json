@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(curl *)",
+      "Bash(wget *)",
+      "Bash(git remote add *)",
+      "Bash(git push --force *)",
+      "Bash(git push --force-with-lease *)",
+      "Write(local.properties)",
+      "Write(*.keystore)",
+      "Write(*.jks)",
+      "Write(google-services.json)",
+      "Write(.env)",
+      "Write(.env.*)"
+    ]
+  }
+}

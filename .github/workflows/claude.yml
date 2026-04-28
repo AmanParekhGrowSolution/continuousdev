@@ -1,17 +1,34 @@
 # .github/workflows/claude.yml
 #
-# End-to-end Android pipeline:
-#   1. Open a GitHub Issue describing a feature ("Add a calendar screen with
-#      month view"). Claude reads it, implements on a new branch, opens a PR.
-#   2. CI builds debug APK, runs lint, runs unit tests.
-#   3. A separate Claude job reviews the PR with Android-specific focus.
-#   4. If CI fails, Claude is invoked to fix it.
-#   5. When CI is green, Slack gets a message linking to the PR's APK artifact
-#      so you can sideload it onto your phone and review.
+# FULLY AUTONOMOUS Android pipeline. Issue in → APK out, no human clicks.
+#
+#   Phase 1 — PLAN (Opus):
+#     Issue opened (or labeled `claude-plan`) → Opus picks architecture, writes
+#     decisions/<n>-<slug>.md, opens a plan PR. The plan PR AUTO-MERGES.
+#
+#   Phase 2 — EXECUTE (Sonnet):
+#     Plan PR merged → Sonnet reads the SPEC, implements on claude/issue-<n>,
+#     opens an impl PR. CI runs. Impl PR AUTO-MERGES when CI is green.
+#     (Bypass: label an issue `plan-approved` to skip the plan PR entirely.)
+#
+#   CI → review → autofix → notify-slack → auto-merge run on every impl PR.
+#   - Autofix is capped at 3 attempts per PR to prevent retry loops.
+#   - Code review is informational (posts comments) — does NOT block merge.
+#   - Slack ping fires once CI is green; the merge happens immediately after.
 #
 # Required repository secrets:
-#   CLAUDE_CODE_OAUTH_TOKEN  - generate locally with `claude setup-token`
-#   SLACK_WEBHOOK_URL        - Slack incoming webhook URL
+#   CLAUDE_CODE_OAUTH_TOKEN  — generate locally with `claude setup-token`
+#   SLACK_WEBHOOK_URL        — Slack incoming webhook URL
+#
+# Required repository settings (configure in GitHub UI, not here):
+#   - Settings → General → "Allow auto-merge" → ENABLED
+#   - Settings → General → "Automatically delete head branches" → ENABLED
+#   - Branch protection on `master`:
+#       - Require status checks: ci  (so impl PRs only auto-merge on green)
+#       - Require review from Code Owners  (CODEOWNERS protects only sensitive
+#         paths — workflow, CLAUDE.md, .claude/. App code merges without review.)
+#       - Disallow force-push
+#       - Do NOT require "approvals: 1" — that would block the bot.
 
 name: Claude Android Pipeline
 
@@ -21,38 +38,117 @@ on:
   issue_comment:
     types: [created]
   pull_request:
-    types: [opened, synchronize, reopened]
-  pull_request_review_comment:
-    types: [created]
+    types: [opened, synchronize, reopened, closed]
 
 concurrency:
   group: claude-${{ github.ref }}
   cancel-in-progress: false
 
+# Workflow-level default: read only. Each job that needs write access overrides below.
 permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-  id-token: write
-  actions: read   # needed so Claude can read CI logs in the autofix job
+  contents: read
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Job 1: Implement the feature described in the issue
+  # Job 1: Plan (Opus) — produce a SPEC, open a plan PR. No production code.
   # ---------------------------------------------------------------------------
-  implement:
-    name: Implement feature from issue
+  plan:
+    name: Plan feature (Opus)
     if: |
-      (github.event_name == 'issues' &&
-        (github.event.action == 'opened' ||
-         (github.event.action == 'labeled' && github.event.label.name == 'claude-implement'))) ||
-      (github.event_name == 'issue_comment' &&
-        !github.event.issue.pull_request &&
-        contains(github.event.comment.body, '@claude'))
+      github.actor != 'github-actions[bot]' &&
+      (
+        (github.event_name == 'issues' &&
+          (github.event.action == 'opened' ||
+           (github.event.action == 'labeled' && github.event.label.name == 'claude-plan'))
+        ) ||
+        (github.event_name == 'issue_comment' &&
+          !github.event.issue.pull_request &&
+          contains(github.event.comment.body, '@claude plan') &&
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
+                   github.event.comment.author_association)
+        )
+      )
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
+
+      - name: Run Claude (planner)
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            You are PLANNING an Android feature. Do NOT write production code in this job.
+
+            Issue #${{ github.event.issue.number }} — ${{ github.event.issue.title }}
+            ----
+            ${{ github.event.issue.body }}
+            ----
+
+            STRICT PROCESS:
+            1. Read CLAUDE.md for stack and architecture conventions.
+            2. Read decisions/_TEMPLATE.md for the SPEC format.
+            3. Read any existing files in decisions/ to avoid contradicting prior decisions.
+            4. Create branch: claude/plan-issue-${{ github.event.issue.number }}
+            5. Write decisions/${{ github.event.issue.number }}-<short-slug>.md using the template.
+               Fill every section. Under "Open questions" list every assumption you had to make.
+               Under "Architecture choice" name the tradeoffs you considered and rejected.
+            6. git add decisions/ only — do NOT touch app/ or any source files.
+            7. Commit: "plan: #${{ github.event.issue.number }} <short title>"
+            8. Open a Pull Request:
+               - Title:  "Plan: ${{ github.event.issue.title }}"
+               - Body:   Paste the full SPEC content. End with "Closes-plan-of #${{ github.event.issue.number }}"
+               - Base:   master
+            9. Post a comment on issue #${{ github.event.issue.number }} linking to the plan PR.
+
+            If anything in the issue is too ambiguous to pick an architecture, DO NOT guess.
+            Instead: write the ambiguity under "Open questions" in the SPEC and ask in the
+            issue comment. A human will answer and you can be re-triggered.
+          claude_args: |
+            --max-turns 25
+            --model claude-opus-4-7
+            --allowedTools "Bash(git status),Bash(git diff *),Bash(git add decisions/*),Bash(git commit *),Bash(git checkout -b *),Bash(git push origin *),Bash(ls *),Bash(cat *),Bash(find *),View,GlobTool,GrepTool,Edit,Write"
+            --disallowedTools "WebFetch,WebSearch,Bash(curl *),Bash(wget *),Bash(git remote *),Bash(git push --force *),Bash(git push --force-with-lease *),Write(app/**),Edit(app/**),Write(*.kts),Edit(*.kts),Write(*.kt),Edit(*.kt)"
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Execute (Sonnet) — implement the merged SPEC
+  # Triggered by:
+  #   a) Plan PR merged  (pull_request closed+merged on a claude/plan-issue-* branch)
+  #   b) Issue labeled `plan-approved`  (bypass for trivial issues)
+  # ---------------------------------------------------------------------------
+  execute:
+    name: Execute implementation (Sonnet)
+    if: |
+      github.actor != 'github-actions[bot]' &&
+      (
+        (github.event_name == 'pull_request' &&
+          github.event.action == 'closed' &&
+          github.event.pull_request.merged == true &&
+          startsWith(github.event.pull_request.head.ref, 'claude/plan-issue-')
+        ) ||
+        (github.event_name == 'issues' &&
+          github.event.action == 'labeled' &&
+          github.event.label.name == 'plan-approved'
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
           fetch-depth: 0
 
       - name: Set up JDK 17
@@ -67,58 +163,71 @@ jobs:
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Run Claude (implementation)
+      - name: Resolve issue number
+        id: issue
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # Extract from branch name: claude/plan-issue-42 → 42
+            BRANCH="${{ github.event.pull_request.head.ref }}"
+            NUM="${BRANCH##*claude/plan-issue-}"
+            echo "number=$NUM" >> "$GITHUB_OUTPUT"
+          else
+            echo "number=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Claude (executor)
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
-            You are implementing an Android feature requested in this GitHub issue.
-
-            Issue title: ${{ github.event.issue.title }}
-            Issue body:
-            ${{ github.event.issue.body }}
+            You are EXECUTING the approved plan for issue #${{ steps.issue.outputs.number }}.
 
             STRICT PROCESS:
-            1. Read CLAUDE.md at the repo root and follow ALL conventions there.
-               It defines the stack, architecture, and rules. Do not deviate.
-            2. If the repo is empty, scaffold a fresh Android project per the
-               stack defined in CLAUDE.md (Kotlin + Jetpack Compose + Material 3).
-            3. Create a branch named `claude/issue-${{ github.event.issue.number }}`.
-            4. Implement the feature with idiomatic Kotlin + Compose:
-                  - Stateless composables; hoist state to ViewModels
-                  - Use `remember` and `rememberSaveable` correctly
-                  - Coroutines scoped to viewModelScope, never GlobalScope
-                  - All user-facing strings in res/values/strings.xml
-                  - Material 3 components, MaterialTheme.colorScheme tokens
-                  - Handle config changes and process death
-                  - No Activity context leaks; use applicationContext where appropriate
-            5. Add tests appropriate for what you built:
-                  - Pure logic and ViewModels: JUnit + kotlinx-coroutines-test
-                  - Composables: androidx.compose.ui.test (only for non-trivial UI)
-                  - Skip UI tests for purely cosmetic changes
-            6. Run `./gradlew lintDebug testDebugUnitTest assembleDebug` locally
-               and make sure it ALL passes before committing.
-            7. Commit with a clear conventional-commit-style message.
-            8. Open a Pull Request whose body includes:
-                  - "Closes #${{ github.event.issue.number }}"
-                  - A short list of screens/components added
-                  - Any assumptions you made
-                  - Anything you intentionally skipped
-            9. Do NOT merge the PR. Leave it for human review.
+            1. Read CLAUDE.md — follow ALL stack and architecture rules.
+            2. Read decisions/${{ steps.issue.outputs.number }}-*.md — this is your SPEC.
+               Follow it exactly. Do not add features beyond the SPEC scope.
+            3. If the SPEC is incomplete or contradictory, STOP. Post a comment on issue
+               #${{ steps.issue.outputs.number }} explaining what is unclear. Do not guess.
+            4. Create branch: claude/issue-${{ steps.issue.outputs.number }} (off master)
+            5. Implement the feature:
+               - Follow every architecture rule in CLAUDE.md (MVVM, StateFlow, Hilt, etc.)
+               - No hardcoded strings — all user-facing text in res/values/strings.xml
+               - Material 3 theming; no hardcoded colors or dp values
+               - Accessibility: contentDescription on every icon, 48dp touch targets
+               - Add tests for non-trivial logic (ViewModel: kotlinx-coroutines-test + Turbine)
+            6. Run `./gradlew lintDebug testDebugUnitTest assembleDebug`
+               ALL must pass before you commit.
+            7. Commit with a conventional commit message.
+            8. Open a Pull Request:
+               - Title:  "Implement: <feature title>"
+               - Body:
+                   Closes #${{ steps.issue.outputs.number }}
+                   SPEC: decisions/${{ steps.issue.outputs.number }}-*.md
+                   Screens / components added: <list>
+                   Assumptions: <list or "none">
+                   Intentionally skipped: <list with reasons or "none">
+               - Base: master
+            9. Do NOT merge the PR.
           claude_args: |
             --max-turns 60
-            --model claude-opus-4-7
-            --allowedTools "Bash(./gradlew *),Bash(git *),Bash(ls *),Bash(cat *),Bash(mkdir *),Bash(find *),View,GlobTool,GrepTool,Edit,Write"
+            --model claude-sonnet-4-6
+            --allowedTools "Bash(./gradlew *),Bash(git status),Bash(git diff *),Bash(git add *),Bash(git commit *),Bash(git checkout -b *),Bash(git push origin *),Bash(ls *),Bash(cat *),Bash(mkdir *),Bash(find *),View,GlobTool,GrepTool,Edit,Write"
+            --disallowedTools "WebFetch,WebSearch,Bash(curl *),Bash(wget *),Bash(git remote *),Bash(git push --force *),Bash(git push --force-with-lease *)"
 
   # ---------------------------------------------------------------------------
-  # Job 2: Build, lint, and test on every PR push
+  # Job 3: CI — build, lint, test on every impl PR push
+  # Skips when the push came from the autofix bot (breaks the retry loop).
   # ---------------------------------------------------------------------------
   ci:
     name: Build / Lint / Test
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' &&
+        github.event.action != 'closed' &&
+        !startsWith(github.event.pull_request.head.ref, 'claude/plan-issue-')
     runs-on: ubuntu-latest
-    outputs:
-      result: ${{ steps.assemble.outcome }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -182,13 +291,23 @@ jobs:
           exit 1
 
   # ---------------------------------------------------------------------------
-  # Job 3: Claude reviews the PR (Android-specific focus)
+  # Job 4: Claude code review (Sonnet) — Android-specific focus
+  # Runs on opened and synchronize, but skips bot-pushed autofix commits.
+  # Plan PRs are reviewed by humans only (excluded by branch prefix check).
   # ---------------------------------------------------------------------------
   review:
-    name: Claude code review
-    if: github.event_name == 'pull_request' && github.event.action == 'opened'
+    name: Claude code review (Sonnet)
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.action != 'closed' &&
+      github.actor != 'github-actions[bot]' &&
+      !startsWith(github.event.pull_request.head.ref, 'claude/plan-issue-')
     needs: ci
     runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      pull-requests: write
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -201,7 +320,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             You are a senior Android engineer reviewing PR #${{ github.event.pull_request.number }}.
-            You did NOT write this code; review it as if a junior engineer did.
+            You did NOT write this code; review it as if a junior engineer submitted it.
             Reference CLAUDE.md for project conventions.
 
             Focus on Android-specific issues, in priority order:
@@ -233,14 +352,14 @@ jobs:
               - Material 3 theming used; no hardcoded colors or dp/sp values
               - Hardcoded strings — everything user-facing must be in strings.xml
               - Accessibility: contentDescription on icons/images,
-                semantic Modifier.semantics where appropriate, touch targets >= 48dp,
+                Modifier.semantics where appropriate, touch targets >= 48dp,
                 supports TalkBack
               - Dark theme support
               - Edge-to-edge handled (insets, system bars)
 
             SECURITY
               - Secrets, API keys, tokens not committed
-              - Network traffic uses HTTPS, certificate pinning if needed
+              - Network traffic uses HTTPS
               - Sensitive data not in logs or SharedPreferences in plaintext
               - Exported components (activities, services, receivers) reviewed
               - Permissions in AndroidManifest minimal and justified
@@ -250,31 +369,75 @@ jobs:
               - Tests are deterministic (no real time, no real network)
               - ViewModels tested with TestDispatcher
 
-            Post inline comments on specific lines. Then post ONE summary
-            comment at the top with:
+            Post inline comments on specific lines where relevant. Then post ONE
+            top-level summary comment with:
               - Verdict: APPROVE / REQUEST_CHANGES / COMMENT
-              - Numbered list of BLOCKING issues
-              - Numbered list of NON-BLOCKING suggestions
+              - BLOCKING issues (numbered)
+              - NON-BLOCKING suggestions (numbered)
 
-            Do NOT push code changes from this job.
+            Do NOT push any code changes.
           claude_args: |
             --max-turns 25
-            --model claude-opus-4-7
+            --model claude-sonnet-4-6
+            --allowedTools "View,GlobTool,GrepTool,Bash(./gradlew *),Bash(git diff *),Bash(git log *),Bash(cat *),Bash(ls *),Bash(find *)"
+            --disallowedTools "WebFetch,WebSearch,Bash(curl *),Bash(wget *),Bash(git push *),Bash(git remote *),Bash(git commit *),Edit,Write"
 
   # ---------------------------------------------------------------------------
-  # Job 4: If CI fails, ask Claude to fix the PR
+  # Job 5: Auto-fix failing PR (Sonnet) — capped at 3 attempts per PR
+  # Skips on bot-actor synchronize to prevent the autofix→ci→autofix loop.
   # ---------------------------------------------------------------------------
   autofix:
-    name: Auto-fix failing PR
-    if: github.event_name == 'pull_request' && always()
+    name: Auto-fix failing PR (Sonnet)
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.action != 'closed' &&
+      github.actor != 'github-actions[bot]' &&
+      !startsWith(github.event.pull_request.head.ref, 'claude/plan-issue-')
     needs: ci
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
     steps:
       - name: Skip if CI passed
         if: needs.ci.result != 'failure'
         run: |
-          echo "CI passed, nothing to fix."
+          echo "CI passed — nothing to fix."
           exit 0
+
+      - name: Enforce autofix attempt cap (max 3)
+        if: needs.ci.result == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = context.payload.pull_request.labels.map(l => l.name);
+            const used = labels.filter(n => n.startsWith('autofix-attempt-')).length;
+            if (used >= 3) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body: [
+                  '### ❌ Autofix attempt cap reached (3 / 3)',
+                  '',
+                  'Claude has made 3 autofix attempts and CI is still failing.',
+                  'Human intervention required — please review the build logs and fix manually.',
+                ].join('\n'),
+              });
+              core.setFailed('Autofix attempt cap (3) reached. Stopping.');
+              return;
+            }
+            const next = used + 1;
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              labels: [`autofix-attempt-${next}`],
+            });
+            core.info(`Autofix attempt ${next} / 3`);
 
       - uses: actions/checkout@v4
         if: needs.ci.result == 'failure'
@@ -305,32 +468,42 @@ jobs:
           prompt: |
             CI is failing on PR #${{ github.event.pull_request.number }}.
 
-            Read the most recent failed Actions run logs for this PR. Identify
-            whether lint, unit tests, or `assembleDebug` failed and fix it.
+            Run `./gradlew lintDebug testDebugUnitTest assembleDebug` to reproduce the failure
+            locally. Read the output carefully to identify whether lint, unit tests, or the
+            assemble step failed, and fix it.
 
             RULES:
               - Smallest possible change to make CI green.
-              - Do NOT disable, ignore, or weaken tests/lint. If a test or
-                lint rule is genuinely wrong, fix it correctly and explain why
+              - Do NOT disable, suppress, ignore, or weaken any test or lint rule.
+                If a lint rule or test is genuinely wrong, fix it correctly and explain why
                 in the commit message.
               - Do not bump dependencies unless that is the actual fix.
-              - Run `./gradlew lintDebug testDebugUnitTest assembleDebug`
-                locally before committing — verify it passes.
-              - Push the fix to the PR's existing branch.
-              - Add a PR comment summarizing the root cause and the fix.
+              - Run `./gradlew lintDebug testDebugUnitTest assembleDebug` locally before
+                committing — all must pass.
+              - Push the fix to the existing PR branch (do NOT open a new PR).
+              - Post a PR comment summarising: root cause, fix applied, and any follow-up
+                that is out of scope for this autofix.
           claude_args: |
             --max-turns 30
-            --model claude-opus-4-7
-            --allowedTools "Bash(./gradlew *),Bash(git *),Bash(ls *),Bash(cat *),Bash(find *),View,GlobTool,GrepTool,Edit,Write"
+            --model claude-sonnet-4-6
+            --allowedTools "Bash(./gradlew *),Bash(git status),Bash(git diff *),Bash(git add *),Bash(git commit *),Bash(git push origin *),Bash(ls *),Bash(cat *),Bash(find *),View,GlobTool,GrepTool,Edit,Write"
+            --disallowedTools "WebFetch,WebSearch,Bash(curl *),Bash(wget *),Bash(git remote *),Bash(git push --force *),Bash(git push --force-with-lease *),Bash(git checkout -b *)"
 
   # ---------------------------------------------------------------------------
-  # Job 5: Notify Slack with a direct APK download link
+  # Job 6: Notify Slack — fires on every PR CI result including post-autofix greens
+  # Uses always() + needs:[ci] only so it isn't blocked when review is skipped.
   # ---------------------------------------------------------------------------
   notify-slack:
     name: Notify Slack with APK
-    if: github.event_name == 'pull_request'
-    needs: [ci, review]
+    if: |
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.action != 'closed' &&
+      !startsWith(github.event.pull_request.head.ref, 'claude/plan-issue-')
+    needs: [ci]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+
     steps:
       - name: Build artifact URL
         if: needs.ci.result == 'success'
@@ -359,13 +532,13 @@ jobs:
               - type: "section"
                 text:
                   type: "mrkdwn"
-                  text: "Download the *debug APK* from the GitHub Actions run, then sideload it on your phone (enable _Install unknown apps_ for your browser/file manager)."
+                  text: "Download the *debug APK* from the GitHub Actions run (link below), then sideload it on your device. You may need to enable _Install unknown apps_ in your device settings."
               - type: "actions"
                 elements:
                   - type: "button"
                     text:
                       type: "plain_text"
-                      text: "Download APK"
+                      text: "View APK in Actions"
                     url: "${{ steps.artifact.outputs.url }}"
                     style: "primary"
                   - type: "button"
@@ -386,8 +559,37 @@ jobs:
               - type: "header"
                 text:
                   type: "plain_text"
-                  text: "❌ Build failed — Claude is fixing it"
+                  text: "❌ Build failed"
               - type: "section"
                 text:
                   type: "mrkdwn"
-                  text: "*<${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }}>*\nThe autofix job is running. You'll get another Slack ping when the build is green."
+                  text: "*<${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }}>*\nThe `autofix` job will attempt to repair the build (up to 3 times). You will receive another notification once the build turns green."
+
+  # ---------------------------------------------------------------------------
+  # Job 7: Auto-merge — squash-merge bot-opened PRs as soon as their checks pass
+  # - Plan PRs: no required checks → merges immediately (markdown-only diff)
+  # - Impl PRs: waits for `ci` to pass, then squash-merges
+  # Fires only on `opened` (not `synchronize`) so it runs exactly once per PR.
+  # ---------------------------------------------------------------------------
+  auto-merge:
+    name: Enable auto-merge on bot PR
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.action == 'opened' &&
+      github.actor == 'github-actions[bot]' &&
+      (startsWith(github.event.pull_request.head.ref, 'claude/plan-issue-') ||
+       startsWith(github.event.pull_request.head.ref, 'claude/issue-'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Enable auto-merge (squash + delete branch)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge ${{ github.event.pull_request.number }} \
+            --auto --squash --delete-branch \
+            --repo ${{ github.repository }}

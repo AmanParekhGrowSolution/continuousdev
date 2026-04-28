@@ -7,7 +7,8 @@
 #     decisions/<n>-<slug>.md, opens a plan PR. The plan PR AUTO-MERGES.
 #
 #   Phase 2 — EXECUTE (Sonnet):
-#     Plan PR merged → Sonnet reads the SPEC, implements on claude/issue-<n>,
+#     Plan PR squash-merged → push to master triggers Sonnet, reads the SPEC,
+#     implements on claude/issue-<n>,
 #     opens an impl PR. CI runs. Impl PR AUTO-MERGES when CI is green.
 #     (Bypass: label an issue `plan-approved` to skip the plan PR entirely.)
 #
@@ -37,6 +38,8 @@ on:
     types: [opened, labeled]
   issue_comment:
     types: [created]
+  push:
+    branches: [master]
   pull_request:
     types: [opened, synchronize, reopened, closed]
 
@@ -123,23 +126,26 @@ jobs:
   # ---------------------------------------------------------------------------
   # Job 2: Execute (Sonnet) — implement the merged SPEC
   # Triggered by:
-  #   a) Plan PR merged  (pull_request closed+merged on a claude/plan-issue-* branch)
+  #   a) Plan PR squash-merged → push to master with "plan: #N" commit subject
   #   b) Issue labeled `plan-approved`  (bypass for trivial issues)
+  #
+  # NOTE: We do NOT use pull_request: closed.merged because GitHub's
+  # "Automatically delete head branches" setting deletes the branch before
+  # the workflow runner can start, causing the run to be cancelled.
+  # Instead we trigger from the resulting push to master, whose squash commit
+  # message always starts with "plan: #N" (the convention from the planner prompt).
   # ---------------------------------------------------------------------------
   execute:
     name: Execute implementation (Sonnet)
     if: |
-      github.actor != 'github-actions[bot]' &&
       (
-        (github.event_name == 'pull_request' &&
-          github.event.action == 'closed' &&
-          github.event.pull_request.merged == true &&
-          startsWith(github.event.pull_request.head.ref, 'claude/plan-issue-')
-        ) ||
-        (github.event_name == 'issues' &&
-          github.event.action == 'labeled' &&
-          github.event.label.name == 'plan-approved'
-        )
+        github.event_name == 'push' &&
+        startsWith(github.event.head_commit.message, 'plan: #')
+      ) ||
+      (
+        github.event_name == 'issues' &&
+        github.event.action == 'labeled' &&
+        github.event.label.name == 'plan-approved'
       )
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -170,10 +176,10 @@ jobs:
       - name: Resolve issue number
         id: issue
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            # Extract from branch name: claude/plan-issue-42 → 42
-            BRANCH="${{ github.event.pull_request.head.ref }}"
-            NUM="${BRANCH##*claude/plan-issue-}"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # Extract from squash commit: "plan: #42 Add foo bar (#15)" → 42
+            MSG="${{ github.event.head_commit.message }}"
+            NUM=$(echo "$MSG" | grep -oP '(?<=plan: #)\d+' | head -1)
             echo "number=$NUM" >> "$GITHUB_OUTPUT"
           else
             echo "number=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"

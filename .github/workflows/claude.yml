@@ -74,6 +74,7 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
+      id-token: write
 
     steps:
       - uses: actions/checkout@v4
@@ -144,6 +145,7 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
+      id-token: write
 
     steps:
       - uses: actions/checkout@v4
@@ -307,6 +309,7 @@ jobs:
     timeout-minutes: 12
     permissions:
       pull-requests: write
+      id-token: write
 
     steps:
       - uses: actions/checkout@v4
@@ -400,6 +403,7 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
+      id-token: write
 
     steps:
       - name: Skip if CI passed

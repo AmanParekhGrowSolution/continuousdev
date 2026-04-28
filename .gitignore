@@ -14,6 +14,9 @@
 .cxx
 local.properties
 
+# Claude Code local session state
+.claude/settings.local.json
+
 # Android signing & credentials — never commit these
 *.keystore
 *.jks

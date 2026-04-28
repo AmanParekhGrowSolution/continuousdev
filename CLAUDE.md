@@ -1,13 +1,15 @@
 # CLAUDE.md
 
-This file is read by Claude Code on every run. It defines the stack, architecture, and conventions for this Android project. Follow it strictly. When in doubt, ask in the PR description rather than improvise.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+It defines the stack, architecture, and conventions for this Android project. Follow it strictly. When in doubt, ask in the PR description rather than improvise.
 
 ## Stack (non-negotiable)
 
 - **Language:** Kotlin (latest stable). No Java.
 - **UI:** Jetpack Compose with Material 3. No XML layouts, no AppCompat.
-- **Min SDK:** 26. **Target / Compile SDK:** latest stable.
-- **JDK:** 17.
+- **Min SDK:** 24. **Target / Compile SDK:** latest stable.
+- **JDK:** 11 (`compileOptions { sourceCompatibility = JavaVersion.VERSION_11 }`).
 - **Build:** Gradle Kotlin DSL (`build.gradle.kts`). Use the version catalog (`libs.versions.toml`).
 - **Architecture:** MVVM with a unidirectional data flow. UI observes `StateFlow` from `ViewModel`. Events go up via lambdas; state comes down as immutable data classes.
 - **DI:** Hilt. No service locators, no manual singletons for things that should be injected.
@@ -19,6 +21,8 @@ This file is read by Claude Code on every run. It defines the stack, architectur
 - **Testing:** JUnit 4, MockK, Turbine, kotlinx-coroutines-test for unit tests. Compose UI test for screen-level tests.
 
 If a feature requires a new dependency, add it to `libs.versions.toml` and justify it in the PR description.
+
+> **Scaffold state:** This project is bootstrapped with only Compose + Material 3. Hilt, Room, Retrofit, OkHttp, kotlinx.serialization, DataStore, Coil, Navigation Compose, MockK, and Turbine are required by convention but are **not yet in `libs.versions.toml`** — add them when the first feature that needs them is implemented.
 
 ## Project structure
 
@@ -122,7 +126,55 @@ Before opening any PR, the following must pass locally:
 ./gradlew lintDebug testDebugUnitTest assembleDebug
 ```
 
+Run a single unit test class:
+
+```bash
+./gradlew testDebugUnitTest --tests "com.example.myapplication.ExampleUnitTest"
+```
+
+Run instrumented tests (requires a connected device or emulator):
+
+```bash
+./gradlew connectedDebugAndroidTest
+```
+
 If any of those fails, the PR is not ready. The CI workflow runs the same commands, so this saves a round trip.
+
+## CI pipeline
+
+The GitHub Actions workflow (`.github/workflows/claude.yml`) is **fully autonomous**: write an issue, receive a Slack notification with a debug APK. No human clicks in between.
+
+**End-to-end flow:**
+
+1. Issue opened → `plan` (Opus) writes `decisions/<n>-<slug>.md` and opens a plan PR on `claude/plan-issue-<n>`.
+2. `auto-merge` immediately enables squash auto-merge on the plan PR. Because no required status checks apply to markdown-only diffs, it merges within seconds.
+3. Plan PR merged → `execute` (Sonnet) reads the SPEC and opens an implementation PR on `claude/issue-<n>`.
+4. `auto-merge` enables squash auto-merge on the impl PR — it will fire as soon as `ci` is green.
+5. `ci` runs (`lintDebug testDebugUnitTest assembleDebug`) and uploads the debug APK artifact.
+6. If `ci` fails → `autofix` (Sonnet) pushes a fix (capped at 3 attempts via `autofix-attempt-N` labels). `ci` re-runs on each autofix commit; on green, auto-merge fires.
+7. `review` (Sonnet) posts inline comments and a verdict — informational, does not block merge.
+8. `notify-slack` sends a Slack message with the APK link when green, or a "build failed / autofix in progress" message when not.
+
+**Bypass valve:** Label an issue `plan-approved` to skip the plan PR entirely and go straight to execute.
+
+**Branch naming:** `claude/plan-issue-<n>` (plan PR) and `claude/issue-<n>` (impl PR), both off `master`, both auto-deleted on merge.
+
+**Long-term memory:** `decisions/` is the canonical record of architectural choices. Grep it before coding to avoid re-litigating settled decisions.
+
+**JDK note:** Production code targets JDK 11 bytecode (`compileOptions { sourceCompatibility = JavaVersion.VERSION_11 }`). CI and local Gradle runs use JDK 17 as the toolchain host — this is intentional and fine.
+
+**Required GitHub repo settings** (configure once in the GitHub UI):
+- Settings → General → Pull Requests → Allow auto-merge ✓
+- Settings → General → Pull Requests → Automatically delete head branches ✓
+- Branch protection on `master`: Require PR, require status check `ci`, require Code Owners review, disallow force-push. Do NOT set "Required approvals: 1" — that blocks the bot.
+
+**Kill switch (most to least reversible):**
+1. Disable "Allow auto-merge" in repo settings → bot PRs queue for manual merge.
+2. Comment-out the `auto-merge` job in `claude.yml`.
+3. Add `/decisions/` back to `CODEOWNERS` → plan PRs need a human approver.
+4. `gh pr revert <number>` to undo any merged PR.
+
+Required secrets: `CLAUDE_CODE_OAUTH_TOKEN`, `SLACK_WEBHOOK_URL`.
 
 ## Commits & PRs
 
@@ -137,6 +189,6 @@ If any of those fails, the PR is not ready. The CI workflow runs the same comman
 
 ## When the issue is ambiguous
 
-If the issue doesn't specify something concrete (e.g. "add a calendar app" without saying month/week/day view, with or without events, local-only or synced), make a reasonable choice and **list it explicitly under "Assumptions" in the PR body**. Do not silently pick.
+Every issue goes through the plan phase first — see "CI pipeline" above. The plan PR (`decisions/<n>-<slug>.md`) is the place to surface ambiguities before any code is written. List every assumption under "Open questions" and ask in the issue comment. Do not silently pick.
 
-If a choice is large enough to lock in architecture (e.g. local-only vs. backend-required, auth vs. no-auth), open a small `SPEC.md` PR first proposing the approach, and wait for it to be merged before implementing.
+If you are implementing (execute phase) and the SPEC is still unclear, stop and post a comment on the source issue rather than improvising architecture.

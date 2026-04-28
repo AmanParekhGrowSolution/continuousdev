@@ -13,3 +13,10 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Android signing & credentials — never commit these
+*.keystore
+*.jks
+google-services.json
+.env
+.env.*

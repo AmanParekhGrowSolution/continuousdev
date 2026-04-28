@@ -1,0 +1,12 @@
+# CODEOWNERS
+# Protects only the pipeline configuration itself — the files that control how
+# Claude operates. PRs that touch these paths require a human sign-off.
+#
+# decisions/ is deliberately NOT listed here so plan PRs can auto-merge without
+# a required reviewer. The safety gate for decisions/ is that plan jobs are
+# disallowedTools from touching app/** or any source files.
+
+/.github/workflows/  @aman.parekh
+/.github/CODEOWNERS  @aman.parekh
+/CLAUDE.md           @aman.parekh
+/.claude/            @aman.parekh

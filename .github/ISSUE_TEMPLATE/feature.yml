@@ -1,0 +1,64 @@
+name: Feature request
+description: Describe a feature for Claude to plan and implement.
+title: "[Feature] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Fill in every section. Claude reads this form verbatim when creating the architecture plan.
+        Vague issues produce vague plans — the more specific you are, the less back-and-forth.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: User-facing summary
+      description: One or two sentences describing what the user can do with this feature.
+      placeholder: "As a user, I can view a monthly calendar and tap any day to see events scheduled for that day."
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Bullet list of observable, testable outcomes. Claude will derive its SPEC from these.
+      placeholder: |
+        - Calendar screen shows the current month grid by default
+        - Tapping a day highlights it and shows that day's events below the grid
+        - Empty days show a "No events" placeholder
+        - Back navigation returns to the previous screen
+    validations:
+      required: true
+
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out of scope
+      description: Explicitly list what this feature does NOT include (saves ambiguity).
+      placeholder: |
+        - Event creation / editing (tracked in #42)
+        - Week or agenda view
+        - Sync with external calendars
+    validations:
+      required: true
+
+  - type: textarea
+    id: screens
+    attributes:
+      label: Screens / entry points involved
+      description: Which screens are new or changed? Where does the user navigate from?
+      placeholder: |
+        - New: CalendarScreen (reachable from HomeScreen bottom-nav tab)
+        - Changed: HomeScreen — add Calendar tab to bottom nav
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional notes
+      description: Design references, constraints, dependencies on other issues, or anything else Claude should know.
+      placeholder: "Use Material 3 DatePicker token colours for day cells. Must work offline — no network calls on this screen."
+    validations:
+      required: false

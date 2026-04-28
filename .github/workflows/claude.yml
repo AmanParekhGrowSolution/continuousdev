@@ -44,7 +44,7 @@ on:
     types: [opened, synchronize, reopened, closed]
 
 concurrency:
-  group: claude-${{ github.ref }}
+  group: claude-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
 
 # Workflow-level default: read only. Each job that needs write access overrides below.

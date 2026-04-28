@@ -113,6 +113,7 @@ jobs:
             If anything in the issue is too ambiguous to pick an architecture, DO NOT guess.
             Instead: write the ambiguity under "Open questions" in the SPEC and ask in the
             issue comment. A human will answer and you can be re-triggered.
+          show_full_output: true
           claude_args: |
             --max-turns 50
             --model claude-opus-4-7

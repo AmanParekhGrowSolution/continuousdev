@@ -114,9 +114,9 @@ jobs:
             Instead: write the ambiguity under "Open questions" in the SPEC and ask in the
             issue comment. A human will answer and you can be re-triggered.
           claude_args: |
-            --max-turns 25
+            --max-turns 50
             --model claude-opus-4-7
-            --allowedTools "Bash(git status),Bash(git diff *),Bash(git add decisions/*),Bash(git commit *),Bash(git checkout -b *),Bash(git push origin *),Bash(ls *),Bash(cat *),Bash(find *),View,GlobTool,GrepTool,Edit,Write"
+            --allowedTools "Bash(git status),Bash(git diff *),Bash(git add decisions/*),Bash(git commit *),Bash(git checkout -b *),Bash(git push origin *),Bash(gh pr create *),Bash(gh pr view *),Bash(gh issue comment *),Bash(ls *),Bash(cat *),Bash(find *),Read,Glob,Grep,Edit,Write"
             --disallowedTools "WebFetch,WebSearch,Bash(curl *),Bash(wget *),Bash(git remote *),Bash(git push --force *),Bash(git push --force-with-lease *),Write(app/**),Edit(app/**),Write(*.kts),Edit(*.kts),Write(*.kt),Edit(*.kt)"
 
   # ---------------------------------------------------------------------------
@@ -215,7 +215,7 @@ jobs:
           claude_args: |
             --max-turns 60
             --model claude-sonnet-4-6
-            --allowedTools "Bash(./gradlew *),Bash(git status),Bash(git diff *),Bash(git add *),Bash(git commit *),Bash(git checkout -b *),Bash(git push origin *),Bash(ls *),Bash(cat *),Bash(mkdir *),Bash(find *),View,GlobTool,GrepTool,Edit,Write"
+            --allowedTools "Bash(./gradlew *),Bash(git status),Bash(git diff *),Bash(git add *),Bash(git commit *),Bash(git checkout -b *),Bash(git push origin *),Bash(gh pr create *),Bash(gh pr view *),Bash(gh issue comment *),Bash(ls *),Bash(cat *),Bash(mkdir *),Bash(find *),Read,Glob,Grep,Edit,Write"
             --disallowedTools "WebFetch,WebSearch,Bash(curl *),Bash(wget *),Bash(git remote *),Bash(git push --force *),Bash(git push --force-with-lease *)"
 
   # ---------------------------------------------------------------------------
@@ -385,7 +385,7 @@ jobs:
           claude_args: |
             --max-turns 25
             --model claude-sonnet-4-6
-            --allowedTools "View,GlobTool,GrepTool,Bash(./gradlew *),Bash(git diff *),Bash(git log *),Bash(cat *),Bash(ls *),Bash(find *)"
+            --allowedTools "Read,Glob,Grep,Bash(./gradlew *),Bash(git diff *),Bash(git log *),Bash(cat *),Bash(ls *),Bash(find *)"
             --disallowedTools "WebFetch,WebSearch,Bash(curl *),Bash(wget *),Bash(git push *),Bash(git remote *),Bash(git commit *),Edit,Write"
 
   # ---------------------------------------------------------------------------
@@ -494,7 +494,7 @@ jobs:
           claude_args: |
             --max-turns 30
             --model claude-sonnet-4-6
-            --allowedTools "Bash(./gradlew *),Bash(git status),Bash(git diff *),Bash(git add *),Bash(git commit *),Bash(git push origin *),Bash(ls *),Bash(cat *),Bash(find *),View,GlobTool,GrepTool,Edit,Write"
+            --allowedTools "Bash(./gradlew *),Bash(git status),Bash(git diff *),Bash(git add *),Bash(git commit *),Bash(git push origin *),Bash(gh pr comment *),Bash(ls *),Bash(cat *),Bash(find *),Read,Glob,Grep,Edit,Write"
             --disallowedTools "WebFetch,WebSearch,Bash(curl *),Bash(wget *),Bash(git remote *),Bash(git push --force *),Bash(git push --force-with-lease *),Bash(git checkout -b *)"
 
   # ---------------------------------------------------------------------------

@@ -84,7 +84,8 @@ jobs:
       - name: Run Claude (planner)
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             You are PLANNING an Android feature. Do NOT write production code in this job.
 
@@ -180,7 +181,8 @@ jobs:
       - name: Run Claude (executor)
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             You are EXECUTING the approved plan for issue #${{ steps.issue.outputs.number }}.
 
@@ -320,7 +322,8 @@ jobs:
       - name: Run Claude (Android reviewer)
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             You are a senior Android engineer reviewing PR #${{ github.event.pull_request.number }}.
             You did NOT write this code; review it as if a junior engineer submitted it.
@@ -468,7 +471,8 @@ jobs:
         if: needs.ci.result == 'failure'
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             CI is failing on PR #${{ github.event.pull_request.number }}.
 

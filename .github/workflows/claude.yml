@@ -85,7 +85,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.BOT_PAT }}
           prompt: |
             You are PLANNING an Android feature. Do NOT write production code in this job.
 
@@ -182,7 +182,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.BOT_PAT }}
           prompt: |
             You are EXECUTING the approved plan for issue #${{ steps.issue.outputs.number }}.
 
@@ -472,7 +472,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.BOT_PAT }}
           prompt: |
             CI is failing on PR #${{ github.event.pull_request.number }}.
 
@@ -584,7 +584,6 @@ jobs:
     if: |
       github.event_name == 'pull_request' &&
       github.event.action == 'opened' &&
-      github.actor == 'github-actions[bot]' &&
       (startsWith(github.event.pull_request.head.ref, 'claude/plan-issue-') ||
        startsWith(github.event.pull_request.head.ref, 'claude/issue-'))
     runs-on: ubuntu-latest
@@ -596,7 +595,7 @@ jobs:
     steps:
       - name: Enable auto-merge (squash + delete branch)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.BOT_PAT }}
         run: |
           gh pr merge ${{ github.event.pull_request.number }} \
             --auto --squash --delete-branch \

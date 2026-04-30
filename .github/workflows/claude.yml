@@ -118,26 +118,58 @@ jobs:
             --disallowedTools "WebFetch,WebSearch,Bash(curl *),Bash(wget *),Bash(git remote *),Bash(git push --force *),Bash(git push --force-with-lease *),Write(app/**),Edit(app/**),Write(*.kts),Edit(*.kts),Write(*.kt),Edit(*.kt)"
 
   # ---------------------------------------------------------------------------
-  # Job 2: Execute (Sonnet) — implement the merged SPEC
+  # Job 2a: Trigger-execute — fires when a plan PR is merged, adds `plan-ready`
+  # label to the source issue so the execute job can start cleanly via a label
+  # event (avoids claude-code-action's "Unsupported event type: push" error that
+  # occurs when triggered directly from pull_request.closed).
+  # ---------------------------------------------------------------------------
+  trigger-execute:
+    name: Label issue plan-ready after plan PR merge
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'claude/plan-issue-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+
+    steps:
+      - name: Add plan-ready label to source issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const branch = context.payload.pull_request.head.ref;
+            const issueNumber = parseInt(branch.replace('claude/plan-issue-', ''), 10);
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner, repo: context.repo.repo, name: 'plan-ready',
+              });
+            } catch {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner, repo: context.repo.repo,
+                name: 'plan-ready', color: '0075ca',
+                description: 'Plan merged, ready for implementation',
+              });
+            }
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issueNumber, labels: ['plan-ready'],
+            });
+
+  # ---------------------------------------------------------------------------
+  # Job 2b: Execute (Sonnet) — implement the merged SPEC
   # Triggered by:
-  #   a) Plan PR merged  (pull_request closed+merged on a claude/plan-issue-* branch)
+  #   a) Issue labeled `plan-ready`  (added automatically by trigger-execute)
   #   b) Issue labeled `plan-approved`  (bypass for trivial issues)
   # ---------------------------------------------------------------------------
   execute:
     name: Execute implementation (Sonnet)
     if: |
-      github.actor != 'github-actions[bot]' &&
-      (
-        (github.event_name == 'pull_request' &&
-          github.event.action == 'closed' &&
-          github.event.pull_request.merged == true &&
-          startsWith(github.event.pull_request.head.ref, 'claude/plan-issue-')
-        ) ||
-        (github.event_name == 'issues' &&
-          github.event.action == 'labeled' &&
-          github.event.label.name == 'plan-approved'
-        )
-      )
+      github.event_name == 'issues' &&
+      github.event.action == 'labeled' &&
+      (github.event.label.name == 'plan-approved' || github.event.label.name == 'plan-ready')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -166,14 +198,7 @@ jobs:
       - name: Resolve issue number
         id: issue
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            # Extract from branch name: claude/plan-issue-42 → 42
-            BRANCH="${{ github.event.pull_request.head.ref }}"
-            NUM="${BRANCH##*claude/plan-issue-}"
-            echo "number=$NUM" >> "$GITHUB_OUTPUT"
-          else
-            echo "number=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
-          fi
+          echo "number=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
 
       - name: Run Claude (executor)
         uses: anthropics/claude-code-action@v1

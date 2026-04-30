@@ -7,8 +7,7 @@
 #     decisions/<n>-<slug>.md, opens a plan PR. The plan PR AUTO-MERGES.
 #
 #   Phase 2 — EXECUTE (Sonnet):
-#     Plan PR squash-merged → push to master triggers Sonnet, reads the SPEC,
-#     implements on claude/issue-<n>,
+#     Plan PR merged → Sonnet reads the SPEC, implements on claude/issue-<n>,
 #     opens an impl PR. CI runs. Impl PR AUTO-MERGES when CI is green.
 #     (Bypass: label an issue `plan-approved` to skip the plan PR entirely.)
 #
@@ -42,7 +41,7 @@ on:
     types: [opened, synchronize, reopened, closed]
 
 concurrency:
-  group: claude-${{ github.event_name }}-${{ github.ref }}
+  group: claude-${{ github.ref }}
   cancel-in-progress: false
 
 # Workflow-level default: read only. Each job that needs write access overrides below.
@@ -75,7 +74,6 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
-      id-token: write
 
     steps:
       - uses: actions/checkout@v4
@@ -86,7 +84,6 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.BOT_PAT }}
           prompt: |
             You are PLANNING an Android feature. Do NOT write production code in this job.
 
@@ -114,18 +111,17 @@ jobs:
             If anything in the issue is too ambiguous to pick an architecture, DO NOT guess.
             Instead: write the ambiguity under "Open questions" in the SPEC and ask in the
             issue comment. A human will answer and you can be re-triggered.
-          show_full_output: true
           claude_args: |
-            --max-turns 50
+            --max-turns 25
             --model claude-opus-4-7
-            --allowedTools "Bash(git status),Bash(git diff *),Bash(git add decisions/*),Bash(git commit *),Bash(git checkout -b *),Bash(git push origin *),Bash(gh pr create *),Bash(gh pr view *),Bash(gh issue comment *),Bash(ls *),Bash(cat *),Bash(find *),Read,Glob,Grep,Edit,Write"
+            --allowedTools "Bash(git status),Bash(git diff *),Bash(git add decisions/*),Bash(git commit *),Bash(git checkout -b *),Bash(git push origin *),Bash(ls *),Bash(cat *),Bash(find *),View,GlobTool,GrepTool,Edit,Write"
             --disallowedTools "WebFetch,WebSearch,Bash(curl *),Bash(wget *),Bash(git remote *),Bash(git push --force *),Bash(git push --force-with-lease *),Write(app/**),Edit(app/**),Write(*.kts),Edit(*.kts),Write(*.kt),Edit(*.kt)"
 
   # ---------------------------------------------------------------------------
-  # Job 2a: Trigger-execute — fires when a plan PR is merged, adds `plan-ready`
-  # label to the source issue so the execute job can start cleanly via a label
-  # event (avoids claude-code-action's "Unsupported event type: push" error that
-  # occurs when triggered directly from pull_request.closed).
+  # Job 2a: Trigger-execute — fires when a plan PR is merged, labels the source
+  # issue `plan-ready` so execute starts via a clean issues.labeled event.
+  # (claude-code-action@v1 throws "Unsupported event type: push" when triggered
+  # from pull_request.closed because the squash-merge also fires a push event.)
   # ---------------------------------------------------------------------------
   trigger-execute:
     name: Label issue plan-ready after plan PR merge
@@ -165,34 +161,21 @@ jobs:
   # ---------------------------------------------------------------------------
   # Job 2b: Execute (Sonnet) — implement the merged SPEC
   # Triggered by:
-  #   a) Issue labeled `plan-ready`  (added automatically by trigger-execute)
-  #   b) Issue labeled `plan-approved`  (bypass for trivial issues)
-  #
-  # NOTE: We do NOT use pull_request: closed.merged because GitHub's
-  # "Automatically delete head branches" setting deletes the branch before
-  # the workflow runner can start, causing the run to be cancelled.
-  # Instead we trigger from the resulting push to master, whose squash commit
-  # message always starts with "plan: #N" (the convention from the planner prompt).
+  #   a) Issue labeled `plan-ready`   (set by trigger-execute after plan PR merges)
+  #   b) Issue labeled `plan-approved` (bypass: skip plan phase entirely)
   # ---------------------------------------------------------------------------
   execute:
     name: Execute implementation (Sonnet)
     if: |
-      (
-        github.event_name == 'push' &&
-        startsWith(github.event.head_commit.message, 'plan: #')
-      ) ||
-      (
-        github.event_name == 'issues' &&
-        github.event.action == 'labeled' &&
-        github.event.label.name == 'plan-approved'
-      )
+      github.event_name == 'issues' &&
+      github.event.action == 'labeled' &&
+      (github.event.label.name == 'plan-ready' || github.event.label.name == 'plan-approved')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: write
       pull-requests: write
       issues: write
-      id-token: write
 
     steps:
       - uses: actions/checkout@v4
@@ -215,20 +198,12 @@ jobs:
       - name: Resolve issue number
         id: issue
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            # Extract from squash commit: "plan: #42 Add foo bar (#15)" → 42
-            MSG="${{ github.event.head_commit.message }}"
-            NUM=$(echo "$MSG" | grep -oP '(?<=plan: #)\d+' | head -1)
-            echo "number=$NUM" >> "$GITHUB_OUTPUT"
-          else
-            echo "number=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
-          fi
+          echo "number=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
 
       - name: Run Claude (executor)
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.BOT_PAT }}
           prompt: |
             You are EXECUTING the approved plan for issue #${{ steps.issue.outputs.number }}.
 
@@ -261,7 +236,7 @@ jobs:
           claude_args: |
             --max-turns 60
             --model claude-sonnet-4-6
-            --allowedTools "Bash(./gradlew *),Bash(git status),Bash(git diff *),Bash(git add *),Bash(git commit *),Bash(git checkout -b *),Bash(git push origin *),Bash(gh pr create *),Bash(gh pr view *),Bash(gh issue comment *),Bash(ls *),Bash(cat *),Bash(mkdir *),Bash(find *),Read,Glob,Grep,Edit,Write"
+            --allowedTools "Bash(./gradlew *),Bash(git status),Bash(git diff *),Bash(git add *),Bash(git commit *),Bash(git checkout -b *),Bash(git push origin *),Bash(ls *),Bash(cat *),Bash(mkdir *),Bash(find *),View,GlobTool,GrepTool,Edit,Write"
             --disallowedTools "WebFetch,WebSearch,Bash(curl *),Bash(wget *),Bash(git remote *),Bash(git push --force *),Bash(git push --force-with-lease *)"
 
   # ---------------------------------------------------------------------------
@@ -357,7 +332,6 @@ jobs:
     timeout-minutes: 12
     permissions:
       pull-requests: write
-      id-token: write
 
     steps:
       - uses: actions/checkout@v4
@@ -369,7 +343,6 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             You are a senior Android engineer reviewing PR #${{ github.event.pull_request.number }}.
             You did NOT write this code; review it as if a junior engineer submitted it.
@@ -431,7 +404,7 @@ jobs:
           claude_args: |
             --max-turns 25
             --model claude-sonnet-4-6
-            --allowedTools "Read,Glob,Grep,Bash(./gradlew *),Bash(git diff *),Bash(git log *),Bash(cat *),Bash(ls *),Bash(find *)"
+            --allowedTools "View,GlobTool,GrepTool,Bash(./gradlew *),Bash(git diff *),Bash(git log *),Bash(cat *),Bash(ls *),Bash(find *)"
             --disallowedTools "WebFetch,WebSearch,Bash(curl *),Bash(wget *),Bash(git push *),Bash(git remote *),Bash(git commit *),Edit,Write"
 
   # ---------------------------------------------------------------------------
@@ -452,7 +425,6 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
-      id-token: write
 
     steps:
       - name: Skip if CI passed
@@ -518,7 +490,6 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.BOT_PAT }}
           prompt: |
             CI is failing on PR #${{ github.event.pull_request.number }}.
 
@@ -540,7 +511,7 @@ jobs:
           claude_args: |
             --max-turns 30
             --model claude-sonnet-4-6
-            --allowedTools "Bash(./gradlew *),Bash(git status),Bash(git diff *),Bash(git add *),Bash(git commit *),Bash(git push origin *),Bash(gh pr comment *),Bash(ls *),Bash(cat *),Bash(find *),Read,Glob,Grep,Edit,Write"
+            --allowedTools "Bash(./gradlew *),Bash(git status),Bash(git diff *),Bash(git add *),Bash(git commit *),Bash(git push origin *),Bash(ls *),Bash(cat *),Bash(find *),View,GlobTool,GrepTool,Edit,Write"
             --disallowedTools "WebFetch,WebSearch,Bash(curl *),Bash(wget *),Bash(git remote *),Bash(git push --force *),Bash(git push --force-with-lease *),Bash(git checkout -b *)"
 
   # ---------------------------------------------------------------------------
@@ -630,6 +601,7 @@ jobs:
     if: |
       github.event_name == 'pull_request' &&
       github.event.action == 'opened' &&
+      github.actor == 'github-actions[bot]' &&
       (startsWith(github.event.pull_request.head.ref, 'claude/plan-issue-') ||
        startsWith(github.event.pull_request.head.ref, 'claude/issue-'))
     runs-on: ubuntu-latest
@@ -639,10 +611,10 @@ jobs:
       pull-requests: write
 
     steps:
-      - name: Enable auto-merge (squash)
+      - name: Enable auto-merge (squash + delete branch)
         env:
-          GH_TOKEN: ${{ secrets.BOT_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh pr merge ${{ github.event.pull_request.number }} \
-            --auto --squash \
+            --auto --squash --delete-branch \
             --repo ${{ github.repository }}

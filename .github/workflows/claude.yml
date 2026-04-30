@@ -165,27 +165,15 @@ jobs:
   # ---------------------------------------------------------------------------
   # Job 2b: Execute (Sonnet) — implement the merged SPEC
   # Triggered by:
-  #   a) Issue labeled `plan-ready`  (added automatically by trigger-execute)
-  #   b) Issue labeled `plan-approved`  (bypass for trivial issues)
-  #
-  # NOTE: We do NOT use pull_request: closed.merged because GitHub's
-  # "Automatically delete head branches" setting deletes the branch before
-  # the workflow runner can start, causing the run to be cancelled.
-  # Instead we trigger from the resulting push to master, whose squash commit
-  # message always starts with "plan: #N" (the convention from the planner prompt).
+  #   a) Issue labeled `plan-ready`   (added by trigger-execute after plan PR merges)
+  #   b) Issue labeled `plan-approved` (bypass: skip plan phase entirely)
   # ---------------------------------------------------------------------------
   execute:
     name: Execute implementation (Sonnet)
     if: |
-      (
-        github.event_name == 'push' &&
-        startsWith(github.event.head_commit.message, 'plan: #')
-      ) ||
-      (
-        github.event_name == 'issues' &&
-        github.event.action == 'labeled' &&
-        github.event.label.name == 'plan-approved'
-      )
+      github.event_name == 'issues' &&
+      github.event.action == 'labeled' &&
+      (github.event.label.name == 'plan-ready' || github.event.label.name == 'plan-approved')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -215,14 +203,7 @@ jobs:
       - name: Resolve issue number
         id: issue
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            # Extract from squash commit: "plan: #42 Add foo bar (#15)" → 42
-            MSG="${{ github.event.head_commit.message }}"
-            NUM=$(echo "$MSG" | grep -oP '(?<=plan: #)\d+' | head -1)
-            echo "number=$NUM" >> "$GITHUB_OUTPUT"
-          else
-            echo "number=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
-          fi
+          echo "number=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
 
       - name: Run Claude (executor)
         uses: anthropics/claude-code-action@v1

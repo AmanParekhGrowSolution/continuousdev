@@ -38,8 +38,6 @@ on:
     types: [opened, labeled]
   issue_comment:
     types: [created]
-  push:
-    branches: [master]
   pull_request:
     types: [opened, synchronize, reopened, closed]
 
